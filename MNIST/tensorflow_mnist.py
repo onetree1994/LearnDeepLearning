@@ -13,7 +13,7 @@ def load_data(path_train, path_test, use_image=True):
     train_x = []
     train_y = []
     test_x = []
-    print('loading...')
+    print('loading data...')
     time_start = time.time()
     with open(path_train, mode='r') as path:
         reader = csv.reader(path)
@@ -77,23 +77,26 @@ class MNIST(object):
         y_all = np.array(self.train_y)
         return x_all, y_all
 
+    def batch_predict(self):
+        x_all = np.array(self.test_x)
+        return x_all
+
 
 class PerformanceCurve(object):
     def __init__(self):
         self.performance = []
         self.cnt = 0
 
-    def next_value(self, rate):
+    def next_value(self, rate, step=1):
         self.performance.append([self.cnt, rate])
-        self.cnt = self.cnt + 1
+        self.cnt = self.cnt + step
 
     def clear_all(self):
         self.cnt = 0
         self.performance = []
 
-    def show(self, figure_num = 1):
+    def show(self):
         performance_show = np.array(self.performance)
-        plt.figure(figure_num)
         plt.plot(performance_show[:, 0], performance_show[:, 1], '-')
         plt.show()
 
@@ -120,7 +123,7 @@ def max_pool_2x2(x):
 def pure_softmax(_mnist, showcurve=False):
     # design the cal graph
     # input
-    x = tf.placeholder(dtype=tf.float32, shape=[None, 784])
+    x = tf.placeholder(dtype=tf.float32, shape=[None, 784], name='x')
 
     # softmax layer
     # w_0 = tf.Variable(weight_init([784, 500]))
@@ -138,15 +141,15 @@ def pure_softmax(_mnist, showcurve=False):
     y = tf.nn.softmax(logits=tf.matmul(x, w) + b)
 
     # input label
-    y_ = tf.placeholder(dtype=tf.float32, shape=[None, 10])
+    y_ = tf.placeholder(dtype=tf.float32, shape=[None, 10], name='y_')
 
     # optimization function: cross entropy
     cross_entropy = -tf.reduce_sum(input_tensor=y_ * tf.log(y))
     train_step = tf.train.GradientDescentOptimizer(learning_rate=1e-7).minimize(loss=cross_entropy)
 
-    # cal correction rate
+    # cal acuracy
     correction_vector = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
-    correction_rate = tf.reduce_mean(tf.cast(x=correction_vector, dtype=tf.float32))
+    acuracy = tf.reduce_mean(tf.cast(x=correction_vector, dtype=tf.float32))
 
     init = tf.global_variables_initializer()
     pfr = PerformanceCurve()
@@ -159,87 +162,129 @@ def pure_softmax(_mnist, showcurve=False):
             sess.run(train_step, feed_dict={x: xs, y_: ys})
             if not i % 100:
                 xs, ys = _mnist.batch_all()
-                rate = sess.run(correction_rate, feed_dict={x: xs, y_: ys})
-                pfr.next_value(rate)
-                print(i, " :correction rate:", rate)
+                rate = sess.run(acuracy, feed_dict={x: xs, y_: ys})
+                pfr.next_value(rate, 100)
+                print(i, " :acuracy:", rate)
         time_end = time.time()
         print("elapsed time: ", time_end - time_start)
         if showcurve:
             pfr.show()
 
 
+def visualize_cnn_kernel(sess, kernel):
+    res = sess.run(kernel)
+    rs = int(np.sqrt(len(res[0][0][0]))) + 1
+    cs = rs
+    for k in range(len(res[0][0][0])):
+        plt.subplot(rs, cs, k + 1)
+        plt.imshow(res[:, :, 0, k], cmap='gray')
+        # print(res[:, :, k])
+
+
 def cnn(_mnist, showcurve=False):
     # input, x:784, y:10_
-    x = tf.placeholder(dtype=tf.float32, shape=[None, 784])
-    y_ = tf.placeholder(dtype=tf.float32, shape=[None, 10])
+    x = tf.placeholder(dtype=tf.float32, shape=[None, 784], name='x')
+    y_ = tf.placeholder(dtype=tf.float32, shape=[None, 10], name='y_')
     x_image = tf.reshape(x, [-1, 28, 28, 1])    # [batch, in_height, in_width, in_channels], -1 means cal it based on x
 
-    # conv 1, 28*28->28*28*32
+    # convolution 1, 28*28->28*28*32
     w_conv1 = weight_init([5, 5, 1, 32])        # [filter_height, filter_width, in_channels, out_channels]
     b_conv1 = bias_init([32])
     h_conv1 = tf.nn.tanh(conv2d(x_image, w_conv1) + b_conv1)
 
-    # pool 1, 28*28*32->14*14*32
+    # pooling 1, 28*28*32->14*14*32
     h_pool1 = max_pool_2x2(h_conv1)
 
-    # conv2, 14*14*32->14*14*64
+    # convolution 2, 14*14*32->14*14*64
     w_conv2 = weight_init([5, 5, 32, 64])
     b_conv2 = bias_init([64])
     h_conv2 = tf.nn.tanh(conv2d(h_pool1, w_conv2) + b_conv2)
 
-    # pool2, 14*14*64->7*7*64
+    # pooling 2, 14*14*64->7*7*64
     h_pool2 = max_pool_2x2(h_conv2)
     h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
 
-    # full connect1
+    # full connection 1
     w_full1 = weight_init([7 * 7 * 64, 1024])
     b_full1 = bias_init([1024])
     h_full1 = tf.nn.tanh(tf.matmul(h_pool2_flat, w_full1) + b_full1)
 
     # dropout
-    keep_prob = tf.placeholder(tf.float32)
+    keep_prob = tf.placeholder(tf.float32, name='keep_prob')
     h_full_drop = tf.nn.dropout(h_full1, keep_prob)
 
     # output
     w_full2 = weight_init([1024, 10])
     b_full2 = bias_init([10])
-    y = tf.nn.softmax(tf.matmul(h_full_drop, w_full2) + b_full2)
+    y = tf.nn.softmax(tf.matmul(h_full_drop, w_full2) + b_full2, name='y')
 
     # optimization function: cross entropy
     cross_entropy = -tf.reduce_sum(input_tensor=y_ * tf.log(y))
-    train_step = tf.train.AdamOptimizer(learning_rate=1e-5).minimize(loss=cross_entropy)
+    train_step = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss=cross_entropy)
 
-    # cal correction rate
+    # acuracy
     correction_vector = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
-    correction_rate = tf.reduce_mean(tf.cast(x=correction_vector, dtype=tf.float32))
+    acuracy = tf.reduce_mean(tf.cast(x=correction_vector, dtype=tf.float32))
 
     pfr = PerformanceCurve()
+    # saver = tf.train.Saver()
     init = tf.global_variables_initializer()
     with tf.Session() as sess:
         sess.run(init)
         print("training...")
         time_start = time.time()
         for i in range(10000):
-            xs, ys = _mnist.batch_next(100)
+            xs, ys = _mnist.batch_next(10)
             sess.run(train_step, feed_dict={x: xs, y_: ys, keep_prob: 0.5})
             if not i % 10:
-                # xs, ys = _mnist.batch_all()
-                rate = sess.run(correction_rate, feed_dict={x: xs, y_: ys, keep_prob: 1})
-                pfr.next_value(rate)
-                print(i, " :batch correction rate:", rate)
-                if rate > 0.95:
+                xs, ys = _mnist.batch_next(500)
+                rate = sess.run(acuracy, feed_dict={x: xs, y_: ys, keep_prob: 1})
+                pfr.next_value(rate, 10)
+                print(i, " :batch acuracy:", rate)
+                if rate > 0.995:
                     break
         time_end = time.time()
         print("elapsed time: ", time_end - time_start)
         print("evaluating...")
-        xs, ys = _mnist.batch_all()
-        rate = sess.run(correction_rate, feed_dict={x: xs, y_: ys, keep_prob: 1})
-        print("whole correction rate:", rate)
+        # xs, ys = _mnist.batch_all()
+        xs, ys = _mnist.batch_next(5000)
+        rate = sess.run(acuracy, feed_dict={x: xs, y_: ys, keep_prob: 1})
+        print("whole acuracy:", rate)
+        # print("saving cal_graph...")
+        # saver.save(sess, 'mnist_graph.ckpt')
         if showcurve:
+            plt.figure(1)
+            visualize_cnn_kernel(sess, w_conv1)
+            plt.figure(2)
+            visualize_cnn_kernel(sess, w_conv2)
+            plt.figure(3)
             pfr.show()
 
 
+def predict(_mnist):
+    with tf.Session() as sess:
+        print('loading graph...')
+        saver = tf.train.Saver()
+        saver.restore(sess, 'mnist_graph.ckpt')
+        print('predicting...')
+        xs = _mnist.batch_predict()
+
+
 mnist = MNIST('MNIST_data/train_data.csv', 'MNIST_data/test_data.csv', False, True)
-# we use pure softmax-method to take a test
+# img = mnist.batch_next(1)[0].reshape([28, 28])
+# print(img)
+# plt.imshow(img, cmap='gray')
+# plt.show()
+# we use pure softmax-method to take a test.
 # pure_softmax(mnist, True)
+# then we use cnn to enhance it.
 cnn(mnist, True)
+
+# with open('cnn-acuracy.txt', 'r') as fp:
+#     data = fp.readlines()
+#     data = list(map(float, data))
+#     pfr = PerformanceCurve()
+#     for per in data:
+#         pfr.next_value(per, 10)
+#     pfr.show()
+
